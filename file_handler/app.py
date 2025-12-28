@@ -17,30 +17,29 @@ from langchain_text_splitters import (
     MarkdownHeaderTextSplitter,
     RecursiveCharacterTextSplitter,
 )
+import os
+from io import BytesIO
 
 s3 = boto3.client("s3")
 
 
-ARTIFACT_BUCKET = "your-artifact-bucket-name"
+ARTIFACT_BUCKET = os.environ.get("BUCKET_NAME", "my-artifact-bucket")
 
 
 @durable_execution
 def lambda_handler(event: dict, context: DurableContext):
-    key = ""
-    id = ""
+    key = event["key"]
+    id = f"id-{key}"
 
-    file_meta = context.step(detect_file_type(
-        key, id), name="detect_file_type")
+    file_meta = context.step(detect_file_type(key, id), name="detect_file_type")
 
-    markdown_key, markdown_id = context.step(
-        to_markdown(file_meta), name="to_markdown")
+    markdown_key, markdown_id = context.step(to_markdown(file_meta), name="to_markdown")
 
-    chunks = context.step(split_text(
-        markdown_key, markdown_id), name="split_text")
+    chunks = context.step(split_text(markdown_key, markdown_id), name="split_text")
 
     config = MapConfig(
         max_concurrency=5,
-        item_batcher=ItemBatcher(max_items_per_batch=1),
+        item_batcher=ItemBatcher(max_items_per_batch=5),
         completion_config=CompletionConfig.all_successful(),
     )
 
@@ -51,7 +50,11 @@ def lambda_handler(event: dict, context: DurableContext):
         config=config,
     )
 
-    return results
+    context.logger.info(results)
+
+    return {
+        'message': 'Execution completed successfully',
+    }
 
 
 @durable_step
@@ -71,9 +74,11 @@ def to_markdown(step_context: StepContext, file_meta: dict):
     obj = s3.get_object(Bucket=ARTIFACT_BUCKET, Key=key)
     file_bytes = obj["Body"].read()
 
+    stream = BytesIO(file_bytes)
+
     md = MarkItDown()
 
-    result = md.convert_stream(file_bytes)
+    result = md.convert_stream(stream)
 
     out_key = f"{id}/markdown/markdown.md"
 
@@ -122,17 +127,18 @@ def split_text(step_context: StepContext, markdown_key: str, id: str):
 
 def embed_and_store(
     step_context: DurableContext,
-    batch: BatchedInput[None, dict],
+    batch: dict,
     index: int,
-    items: Sequence[dict],
+    items: list[dict],
 ):
-    result = []
-    for item in batch.items:
-        obj = s3.get_object(Bucket=ARTIFACT_BUCKET, Key=item["key"])
-        chunk = obj["Body"].read().decode("utf-8")
+    step_context.logger.info(f"Processing batch {index} with {len(items)} items.")
+    step_context.logger.info(f"batch: {batch}")
 
-        print(chunk)
+    if not batch:
+        return {'message': 'No data to process'}
+    obj = s3.get_object(Bucket=ARTIFACT_BUCKET, Key=batch["key"])
+    chunk = obj["Body"].read().decode("utf-8")
 
-        result.append({})
+    print(chunk)
 
-    return result
+    return {'message': 'Processed successfully'}

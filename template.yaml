@@ -8,14 +8,43 @@ Description: >
 # More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
 Globals:
   Function:
-    Timeout: 3
+    Timeout: 900
 
 Resources:
-  HelloWorldFunction:
-    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+  FileUploadBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: durable-function-file-upload
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+  FileHandlerLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      ContentUri: file_handler_layer
+      CompatibleRuntimes:
+        - python3.13
+    Metadata:
+      BuildMethod: python3.13
+  FileHandlerDurableFunction:
+    Type: AWS::Serverless::Function
     Properties:
       CodeUri: file_handler/
+      DurableConfig:
+        ExecutionTimeout: 1800
+        RetentionPeriodInDays: 1
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref FileUploadBucket
       Handler: app.lambda_handler
+      Layers:
+        - !Ref FileHandlerLayer
+      MemorySize: 1024
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref FileUploadBucket
       Runtime: python3.13
       Architectures:
         - x86_64
@@ -26,7 +55,4 @@ Outputs:
   # https://github.com/awslabs/serverless-application-model/blob/master/docs/internals/generated_resources.rst#api
   HelloWorldFunction:
     Description: "Hello World Lambda Function ARN"
-    Value: !GetAtt HelloWorldFunction.Arn
-  HelloWorldFunctionIamRole:
-    Description: "Implicit IAM Role created for Hello World function"
-    Value: !GetAtt HelloWorldFunctionRole.Arn
+    Value: !GetAtt FileHandlerDurableFunction.Arn
