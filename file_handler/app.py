@@ -1,4 +1,3 @@
-from collections.abc import Sequence
 from aws_durable_execution_sdk_python import (
     durable_execution,
     DurableContext,
@@ -6,24 +5,23 @@ from aws_durable_execution_sdk_python import (
     StepContext,
 )
 from aws_durable_execution_sdk_python.config import (
-    BatchedInput,
     CompletionConfig,
     ItemBatcher,
     MapConfig,
 )
-from markitdown import MarkItDown
 import boto3
 from langchain_text_splitters import (
     MarkdownHeaderTextSplitter,
     RecursiveCharacterTextSplitter,
 )
 import os
-from io import BytesIO
 
 s3 = boto3.client("s3")
 
 
 ARTIFACT_BUCKET = os.environ.get("BUCKET_NAME", "my-artifact-bucket")
+PDF_TO_MARKDOWN_ARN = os.environ.get("PDF_TO_MARKDOWN_ARN", "")
+DOC_TO_MARKDOWN_ARN = os.environ.get("PDF_TO_MARKDOWN_ARN", "")
 
 
 @durable_execution
@@ -31,11 +29,23 @@ def lambda_handler(event: dict, context: DurableContext):
     key = event["key"]
     id = f"id-{key}"
 
-    file_meta = context.step(detect_file_type(key, id), name="detect_file_type")
+    file_type = context.step(detect_file_type(
+        key, id), name="detect_file_type")
 
-    markdown_key, markdown_id = context.step(to_markdown(file_meta), name="to_markdown")
+    file_meta = {"type": file_type, "key": key, "id": id}
 
-    chunks = context.step(split_text(markdown_key, markdown_id), name="split_text")
+    if file_type == "pdf":
+        markdown_key = context.invoke(
+            PDF_TO_MARKDOWN_ARN, file_meta, name="pdf_to_markdown"
+        )
+    elif file_type == "doc":
+        markdown_key = context.invoke(
+            DOC_TO_MARKDOWN_ARN, file_meta, name="doc_to_markdown"
+        )
+    else:
+        return {}
+
+    chunks = context.step(split_text(markdown_key, id), name="split_text")
 
     config = MapConfig(
         max_concurrency=5,
@@ -53,7 +63,7 @@ def lambda_handler(event: dict, context: DurableContext):
     context.logger.info(results)
 
     return {
-        'message': 'Execution completed successfully',
+        "message": "Execution completed successfully",
     }
 
 
@@ -62,33 +72,8 @@ def detect_file_type(step_context: StepContext, key: str, id: str):
     key_lower = key.lower()
 
     if key_lower.endswith(".pdf"):
-        return {"key": key, "id": id, "type": "pdf"}
+        return "pdf"
     return {}
-
-
-@durable_step
-def to_markdown(step_context: StepContext, file_meta: dict):
-    key = file_meta["key"]
-    id = file_meta["id"]
-
-    obj = s3.get_object(Bucket=ARTIFACT_BUCKET, Key=key)
-    file_bytes = obj["Body"].read()
-
-    stream = BytesIO(file_bytes)
-
-    md = MarkItDown()
-
-    result = md.convert_stream(stream)
-
-    out_key = f"{id}/markdown/markdown.md"
-
-    s3.put_object(
-        Bucket=ARTIFACT_BUCKET,
-        Key=out_key,
-        Body=result.text_content,
-    )
-
-    return out_key, id
 
 
 @durable_step
@@ -131,14 +116,15 @@ def embed_and_store(
     index: int,
     items: list[dict],
 ):
-    step_context.logger.info(f"Processing batch {index} with {len(items)} items.")
+    step_context.logger.info(
+        f"Processing batch {index} with {len(items)} items.")
     step_context.logger.info(f"batch: {batch}")
 
     if not batch:
-        return {'message': 'No data to process'}
+        return {"message": "No data to process"}
     obj = s3.get_object(Bucket=ARTIFACT_BUCKET, Key=batch["key"])
     chunk = obj["Body"].read().decode("utf-8")
 
     print(chunk)
 
-    return {'message': 'Processed successfully'}
+    return {"message": "Processed successfully"}

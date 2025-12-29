@@ -1,4 +1,3 @@
-markitdown[pdf]
 aws-durable-execution-sdk-python
 langchain-text-splitters
 
